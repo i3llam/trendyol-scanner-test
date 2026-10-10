@@ -1,0 +1,45 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trendyol Scanner V4</title><style>body{margin:0;background:#eef3f8;color:#20344c;font:16px system-ui,Arial}header{background:#203c61;color:white;padding:20px}main{max-width:600px;margin:14px auto;padding:0 12px}.card{background:white;border-radius:14px;padding:16px;margin:12px 0}button,input{font:inherit;border-radius:9px;padding:12px}button{background:#145e93;color:white;border:0;margin:4px}button.alt{background:#62748a}input{border:1px solid #bcc9d6;width:100%;box-sizing:border-box}#reader{max-width:420px;margin:auto}#nativeVideo{display:none;width:100%;max-width:420px;margin:auto;border-radius:10px}#log{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f5f8;padding:10px;border-radius:8px;font-size:13px}.bad{color:#b91c1c}.good{color:#087c4b}.progress{height:10px;background:#e5edf4;border-radius:9px;overflow:hidden}.progress div{height:100%;background:#087c4b;width:0}.muted{color:#66758a;font-size:13px}</style></head><body><header><b>Trendyol | اختبار السكانر V4</b><div class="muted" style="color:#d8e3ee">اختبار باركود المنتجات فقط — لا توجد بيانات عملاء</div></header><main><div class="card"><b>أفوجين 5% — LOC048</b><p>المطلوب 3 حبات | المقبول: <b id="count">0</b> / 3</p><div class="progress"><div id="bar"></div></div><p class="muted">الباركود الدولي أو GS1 DataMatrix. المربع له سيريال فريد لكل عبوة.</p></div><div class="card"><b>اختبار 1 — قارئ V1 للباركود الدولي</b><p class="muted">نفس محرك القراءة الذي نجح سابقًا، مع إطار المسح.</p><button id="ean">تشغيل قارئ V1</button><button class="alt" id="stop">إيقاف</button><div id="reader"></div></div><div class="card"><b>اختبار 2 — DataMatrix المربع</b><p class="muted">محرك مختلف مدمج في المتصفح، يعمل فقط إذا كان الجهاز يدعم Data Matrix.</p><button id="dm">اختبار قارئ DataMatrix</button><video id="nativeVideo" autoplay playsinline muted></video><p id="support" class="muted">اضغط الاختبار لمعرفة دعم الموبايل.</p></div><div class="card"><p id="status" aria-live="polite" class="muted">جاهز للاختبار</p><b>آخر قراءة</b><div id="log">لا توجد قراءة بعد</div><p class="muted">في V4 يتم استخراج GTIN من GS1 حتى لو ظهر السيريال قبل الرقم. لا تُحتسب عبوة مربعة بدون سيريال واضح.</p><label>اختبار النص يدويًا<input id="raw" placeholder="(01)06285095004629(17)..."></label><button id="manual">اختبار النص</button><button id="reset" class="alt">تصفير العداد</button></div><div class="card muted">V4 نسخة تشخيصية، ليست نظام شحن. لا تستخدم للاعتماد النهائي. تتطلب HTTPS واتصالًا لتحميل قارئ V1.</div></main><script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
+const GTIN='06285095004629', $=x=>document.getElementById(x);let count=0,serials=new Set(),scanner=null,mode='',stream=null,detector=null,raf=0,last='',lastAt=0;function status(s,err=false){$('status').textContent=s;$('status').className=err?'bad':'good'}function beep(ok){try{navigator.vibrate?.(ok?75:[90,60,90]);const C=window.AudioContext||window.webkitAudioContext;if(C){let c=new C(),o=c.createOscillator(),g=c.createGain();o.frequency.value=ok?850:260;g.gain.value=.045;o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.12);o.onended=()=>c.close()}}catch(e){}}
+function validGTIN(g){if(!/^\d{14}$/.test(g))return false;let sum=0;for(let i=0;i<13;i++)sum+=Number(g[i])*(i%2===0?3:1);return (10-sum%10)%10===Number(g[13])}
+function parse(raw){
+ const original=String(raw||'').trim();
+ const s=original.replace(/[\u001d\u001e\u001f]/g,'|').replace(/\s/g,'');
+ let g='',serial='',batch='',expiry='',note='';
+ // Standard human-readable GS1 notation
+ if(/\(01\)\d{14}/.test(s)){
+  g=(s.match(/\(01\)(\d{14})/)||[])[1]||'';
+  serial=(s.match(/\(21\)([^()|]{1,20})/)||[])[1]||'';
+  batch=(s.match(/\(10\)([^()|]{1,20})/)||[])[1]||'';
+  expiry=(s.match(/\(17\)(\d{6})/)||[])[1]||'';
+ }else if(/^\d{8,14}$/.test(s)){
+  g=s.padStart(14,'0');note='باركود خطي بدون سيريال';
+ }else{
+  // Some Android decoders return GS1 fields in a nonstandard order,
+  // e.g. 21<SERIAL>01<GTIN>17<YYMMDD>10<BATCH>.
+  // Extract AI 01 only when the complete 14-digit GTIN has a valid check digit.
+  const candidates=[];const re=/01(\d{14})/g;let m;
+  while((m=re.exec(s))!==null){if(validGTIN(m[1]))candidates.push({g:m[1],start:m.index,end:m.index+16})}
+  if(candidates.length===1){
+   const c=candidates[0];g=c.g;
+   const before=s.slice(0,c.start),after=s.slice(c.end);
+   // AI 21 can precede AI 01: extract only when clearly delimited by AI 01.
+   if(/^21[^|]{1,20}$/.test(before))serial=before.slice(2);
+   // AI 21 may follow a separator (GS1 group separator).
+   let sm=after.match(/(?:^|\|)21([^|]{1,20})(?:\||$)/);
+   if(!serial&&sm)serial=sm[1];
+   let em=after.match(/^17(\d{6})/);if(em)expiry=em[1];
+   let bm=after.match(/(?:^|\|)10([^|]{1,20})(?:\||$)/);
+   if(bm)batch=bm[1];
+   else if(em&&after.slice(8).startsWith('10'))batch=after.slice(10).split('|')[0].slice(0,20);
+   note=serial?'تم تحليل GS1 مع سيريال':'GTIN واضح، لكن السيريال غير محدد';
+  }else note=candidates.length>1?'أكثر من GTIN محتمل':'لم يُعثر على GTIN صالح';
+ }
+ if(g&&!validGTIN(g)){note='GTIN فشل في فحص رقم التحقق';g=''}
+ return {s:original,g,serial,batch,expiry,note};
+}
+function read(raw,format=''){let now=Date.now();if(raw===last&&now-lastAt<1300)return;last=raw;lastAt=now;let p=parse(raw);$('log').textContent='النوع: '+format+'\nالقيمة: '+p.s+'\nGTIN: '+(p.g||'لم يستخرج')+'\nSerial: '+(p.serial||'غير موجود')+'\nBatch: '+(p.batch||'غير مستخرج')+'\nExpiry: '+(p.expiry||'غير مستخرج')+'\nملاحظة: '+(p.note||'-');if(p.g!==GTIN){status('تمت القراءة، لكن المنتج غير مطابق أو GTIN غير مفهوم',true);beep(false);return}if(format==='GS1 DataMatrix'&&!p.serial){status('تم التعرف على GTIN لكن السيريال غير واضح — لن تُحتسب العبوة',true);beep(false);return}if(p.serial&&serials.has(p.serial)){status('مرفوض: نفس السيريال اتسجل قبل كده',true);beep(false);return}if(count>=3){status('مرفوض: العدد اكتمل',true);beep(false);return}if(p.serial)serials.add(p.serial);count++;$('count').textContent=count;$('bar').style.width=(count/3*100)+'%';status('تم قبول '+count+' من 3'+(p.serial?' (سيريال مختلف)':' (بدون سيريال)'));beep(true);if(count===3)status('اكتمل اختبار 3 مسحات. لا يعني اعتماد شحن.')}
+async function stop(){cancelAnimationFrame(raf);if(scanner){try{await scanner.stop()}catch(e){}try{scanner.clear()}catch(e){}scanner=null}if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('nativeVideo').style.display='none';$('nativeVideo').srcObject=null;mode=''}
+$('ean').onclick=async()=>{await stop();if(!window.Html5Qrcode){status('مكتبة V1 لم يتم تحميلها',true);return}try{mode='ean';scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.CODE_128],verbose:false});await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:160}},t=>read(t,'EAN / Barcode'),()=>{});status('قارئ V1 شغال — جرّب الباركود الدولي')}catch(e){status('تعذر تشغيل V1: '+e.message,true)}};
+$('dm').onclick=async()=>{await stop();if(!('BarcodeDetector' in window)){status('المتصفح لا يوفر BarcodeDetector لقراءة DataMatrix',true);$('support').textContent='DataMatrix غير متاح في محرك المتصفح الحالي';return}try{let formats=await BarcodeDetector.getSupportedFormats();$('support').textContent='الأنواع المدعومة: '+formats.join(', ');if(!formats.includes('data_matrix')){status('الموبايل لا يدعم DataMatrix في القارئ المدمج. ده مش عيب في العبوة.',true);return}detector=new BarcodeDetector({formats:['data_matrix']});stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});let v=$('nativeVideo');v.srcObject=stream;v.style.display='block';try{await v.play()}catch(e){if(e.name!=='AbortError')throw e}mode='dm';status('قارئ DataMatrix شغال — وجّه المربع للكاميرا');async function loop(){if(mode!=='dm')return;try{let codes=await detector.detect(v);if(codes.length)read(codes[0].rawValue,'GS1 DataMatrix')}catch(e){status('خطأ قراءة DataMatrix: '+e.message,true)}if(mode==='dm')raf=requestAnimationFrame(loop)}loop()}catch(e){status('تعذر تشغيل DataMatrix: '+e.message,true)}};
+$('stop').onclick=()=>{stop().then(()=>status('تم إيقاف الكاميرا'))};$('manual').onclick=()=>read($('raw').value,'Manual');$('reset').onclick=()=>{count=0;serials.clear();last='';lastAt=0;$('count').textContent='0';$('bar').style.width='0';$('log').textContent='لا توجد قراءة بعد';status('تم تصفير العداد')};window.addEventListener('pagehide',stop);
+</script></body></html>
